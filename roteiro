@@ -1,0 +1,23 @@
+-> avaliar desempenho de servidores echo usando as seguintes abordagens:
+1) internet sockets com multiplos processos
+2) internet sockets com multiplas threads
+3) internet sockets com multiplexação de I/O
+4) unix domain sockets
+
+-> não precisam ser implementados (ufa!)
+-> devo implementar:
+    - bash script que vai executar os vários servidores
+    - gerar gráficos usando o gnuplot para comparar os tempos necessários para cada servidor fornecer o serviço para clientes concorrentes
+-> fazer um vídeo mostrando o script funcionando e analisando resultados obtidos e explicar se os resultados coincidem com o esperado.
+
+
+SOBRE O BASH:
+-> o bash script deve receber n argumentos da linha de comando:
+    a) o primeiro é o número de clientes concorrentes que serão executados
+    b) o resto são os tamanhos dos arquivos que serão passados como entrada para o cliente e que, por sua vez, enviará para o servidor ecoar de volta.
+
+COMPILAÇÃO DOS CÓDIGOS
+-> O arquivo .tar.gz que o prof passou tem todos os arquivos de servidores e do cliente necessários
+** ler cada um deles pra entender o que fazem **
+** testar cada um deles **
+-> usar o comando 'journalctl' para monitorar mensagens do servidor nos logs do SO
