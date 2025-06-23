@@ -21,3 +21,6 @@ COMPILAÇÃO DOS CÓDIGOS
 ** ler cada um deles pra entender o que fazem **
 ** testar cada um deles **
 -> usar o comando 'journalctl' para monitorar mensagens do servidor nos logs do SO
+-> as compilações devem ser automatizadas no script;
+-> o nome do arquivo tem que começar com ep4-clientes+servidores/
+-> os binarios devem ter o mesmo nome dos arquivos fonte sem o .c e devem ser criados no /temp
