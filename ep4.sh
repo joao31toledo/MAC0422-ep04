@@ -12,6 +12,19 @@ declare -a SERVIDORES=(
     "ep4-servidor-unix_threads"
 )
 
+# Strings de log para identificação de início e fim de atendimento ao cliente
+# Estas strings devem corresponder exatamente às mensagens que seus servidores imprimem no journald
+LOG_START_CLIENT_PATTERN="Passou pelo accept :-)"
+LOG_END_CLIENT_PATTERN="Cliente do PID [0-9]+ provavelmente enviou um exit|Cliente da TID [0-9]+ provavelmente enviou um exit|Cliente do socket [0-9]+ provavelmente enviou um exit"
+
+# Define o nome do arquivo de dados para o gnuplot
+# O nome do arquivo depende do número de clientes ($1)
+N_CLIENTS="$1"
+DATA_FILE="/tmp/ep4-resultados-${N_CLIENTS}.data"
+
+# Cria ou limpa o arquivo de dados no início da execução
+> "$DATA_FILE"
+
 # --- Requisitos iniciais (parsing de argumentos) ---
 num_clientes=$1
 shift # Remove o primeiro argumento (num_clientes) da lista
@@ -57,7 +70,7 @@ ARQUIVOS_TESTE=() # Array para armazenar os caminhos dos arquivos gerados
 # Gerar todos os arquivos uma única vez no início
 for tamanho_mb in "$@"; do
     tamanho_bytes=$((tamanho_mb * 1024 * 1024))
-    nome_arquivo_base=$(printf "%dMB" "$tamanho_mb")
+    nome_arquivo_base=$(printf "%02dMB" "$tamanho_mb")
     caminho_arquivo="/tmp/arquivo_${nome_arquivo_base}.txt"
 
     # Geração física do arquivo, a mensagem ">>>>>>> Gerando um arquivo texto de: XMB..." será impressa no loop principal
@@ -82,6 +95,14 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
     echo "" # Linha em branco para melhor espaçamento no terminal
     echo ">>>>>>> Gerando um arquivo texto de: ${tamanho_mb}MB..."
 
+    # --- INÍCIO DO CÓDIGO A ADICIONAR ---
+    # Resetar as variáveis de tempo para cada novo tamanho de arquivo
+    TIME_INET_PROCESSOS=""
+    TIME_INET_THREADS=""
+    TIME_INET_MUXES=""
+    TIME_UNIX_THREADS=""
+    # --- FIM DO CÓDIGO A ADICIONAR ---
+
     # Loop interno: itera sobre os servidores (conforme requisito 2.3 do PDF)
     for nome_servidor_exec in "${SERVIDORES[@]}"; do
         caminho_executavel="/tmp/$nome_servidor_exec"
@@ -105,6 +126,9 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         echo "" # Linha em branco para espaçamento
         echo "Subindo o servidor $nome_servidor_exec"
         
+        # Guarda o tempo de início do servidor para o --since do journalctl (requisito 2.6)
+        SERVER_START_DATE=$(date +'%Y-%m-%d %H:%M:%S')
+
         # Iniciar o servidor em segundo plano (redirecionando saída e erro)
         if [[ "$nome_servidor_exec" =~ ^ep4-servidor-inet_ ]]; then
             "$caminho_executavel" $PORTA_INET >/dev/null 2>&1 & # Servidores INET usam a porta configurada
@@ -175,15 +199,14 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         fi
 
         if [ ! -f "$CLIENT_EXEC" ]; then
-            echo "!!! ERRO: Executável do cliente $CLIENT_EXEC não encontrado. Abortando." >&2
+            echo "!!! ERRO: Executável do cliente ${CLIENT_EXEC} não encontrado. Abortando." >&2
             sudo kill -15 "$server_pid" >/dev/null 2>&1 # Tenta matar o servidor
             exit 1
         fi
 
         PIDS_AND_FILES=() # Array para armazenar PID, e nomes de arquivos de saída/erro para cada cliente
         
-        # Captura o tempo de início dos clientes
-        START_TIME=$(date +%s.%N)
+        # Não captura mais o START_TIME aqui, será do journald
 
         # Loop para lançar múltiplos clientes em segundo plano
         for ((i=0; i<num_clientes; i++)); do
@@ -197,7 +220,7 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
 
         # --- Aguardando os clientes terminarem ---
         echo "" # Linha em branco para espaçamento
-        echo "Esperando os clientes terminarem." # Conforme PDF
+        echo "Esperando os clientes terminarem..." # Conforme PDF
 
         ALL_CLIENTS_GOT_RESPONSE=true # Flag para verificar se cada cliente recebeu ALGUMA resposta
         CLIENT_CRITICAL_ERRORS_FOUND=false # Flag para erros que não são o "fgets"
@@ -223,7 +246,7 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
             if [ "$EXIT_STATUS" -ne 0 ] && [[ ! "$ERROR_CONTENT" =~ "Erro no fgets... ou o arquivo chegou no fim" ]]; then
                 CLIENT_CRITICAL_ERRORS_FOUND=true
             elif [ -n "$ERROR_CONTENT" ]; then
-                CLIENT_FGETS_WARNINGS_COLLECTED+="  (Cliente PID $pid_cliente: Erro esperado: '$ERROR_CONTENT')\n"
+                CLIENT_FGETS_WARNINGS_COLLECTED="${CLIENT_FGETS_WARNINGS_COLLECTED}, Cliente PID ${pid_cliente}: Erro esperado: \"${ERROR_CONTENT}\"\n"
             fi
             
             rm "$output_file" "$error_file" # Remove arquivos temporários
@@ -233,37 +256,55 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         echo "" # Linha em branco para espaçamento
         echo "Verificando os instantes de tempo no journald..." # Conforme PDF
 
-        END_TIME=$(date +%s.%N) # Captura o tempo de fim dos clientes
-        ELAPSED_TIME=$(echo "$END_TIME - $START_TIME" | bc) # Tempo em segundos (float)
+        # Captura todos os logs relevantes do servidor desde o início da sua execução
+        # Usamos -o short-iso para um formato de data/hora fácil de parsear pelo dateutils.diff
+        SERVER_LOGS=$(sudo journalctl --since="$SERVER_START_DATE" -t "$nome_servidor_exec" -q -o short-iso)
+        
+        # Extrai o timestamp do primeiro cliente atendido
+        # LOG_START_CLIENT_PATTERN é uma string fixa, então -F é o ideal.
+        START_TIME_JOURNAL=$(echo "$SERVER_LOGS" | grep -m 1 -F "$LOG_START_CLIENT_PATTERN" | awk '{print $1}')
+        
+        # Extrai o timestamp do último cliente terminou de ser atendido
+        # LOG_END_CLIENT_PATTERN contém regex ([0-9]+), então -E é necessário.
+        END_TIME_JOURNAL=$(echo "$SERVER_LOGS" | grep -E "$LOG_END_CLIENT_PATTERN" | tail -n 1 | awk '{print $1}')
 
-        # Converte segundos para MM:SS, arredondando para o segundo mais próximo
-        ELAPSED_SECONDS_INT=$(printf "%.0f" "$ELAPSED_TIME")
-        MINUTES=$((ELAPSED_SECONDS_INT / 60))
-        SECONDS=$((ELAPSED_SECONDS_INT % 60))
-        ELAPSED_TIME_MM_SS=$(printf "%02d:%02d" $MINUTES $SECONDS)
-
-        # Mensagens de finalização da execução dos clientes (conforme PDF)
-        echo "" # Linha em branco para espaçamento
-        echo ">>>>>>> ${num_clientes} clientes encerraram a conexão"
-        echo "" # Linha em branco para espaçamento
-        echo ">>>>>>> Tempo para servir os ${num_clientes} clientes com o $nome_servidor_exec: ${ELAPSED_TIME_MM_SS}"
-
-        # Imprime avisos de fgets se coletados (não no PDF, mas útil para depuração)
-        if [ -n "$CLIENT_FGETS_WARNINGS_COLLECTED" ]; then
-            echo -e "\n(Avisos de fgets de clientes:\n${CLIENT_FGETS_WARNINGS_COLLECTED})" >&2
+        if [ -z "$START_TIME_JOURNAL" ] || [ -z "$END_TIME_JOURNAL" ]; then
+            echo "!!! ERRO: Não foi possível encontrar os timestamps de início/fim do atendimento nos logs do journald. Abortando." >&2
+            echo "Logs do servidor durante este teste:" >&2
+            echo "$SERVER_LOGS" >&2
+            sudo kill -15 "$server_pid" >/dev/null 2>&1
+            exit 1
         fi
 
+        # Calcula a diferença de tempo usando dateutils.diff e formata para MM:SS
+        # O programa dateutils.diff precisa ser instalado (sudo apt-get install dateutils)
+        ELAPSED_TIME_MM_SS=$(dateutils.ddiff "$START_TIME_JOURNAL" "$END_TIME_JOURNAL" -f "%M:%S")
+
+        # Mensagens de finalização da execução dos clientes (conforme PDF)
+        # echo "" # Linha em branco para espaçamento
+        echo ">>>>>>> ${num_clientes} clientes encerraram a conexão"
+        # echo "" # Linha em branco para espaçamento
+        echo ">>>>>>> Tempo para servir os ${num_clientes} clientes com o $nome_servidor_exec: ${ELAPSED_TIME_MM_SS}"
+        if [[ "$nome_servidor_exec" == "ep4-servidor-inet_processos" ]]; then
+            TIME_INET_PROCESSOS="$ELAPSED_TIME_MM_SS"
+        elif [[ "$nome_servidor_exec" == "ep4-servidor-inet_threads" ]]; then
+            TIME_INET_THREADS="$ELAPSED_TIME_MM_SS"
+        elif [[ "$nome_servidor_exec" == "ep4-servidor-inet_muxes" ]]; then
+            TIME_INET_MUXES="$ELAPSED_TIME_MM_SS"
+        elif [[ "$nome_servidor_exec" == "ep4-servidor-unix_threads" ]]; then
+            TIME_UNIX_THREADS="$ELAPSED_TIME_MM_SS"
+        fi
         # --- Verificação de Sucesso Final para o Teste Atual ---
         if [ "$ALL_CLIENTS_GOT_RESPONSE" = false ] || [ "$CLIENT_CRITICAL_ERRORS_FOUND" = true ]; then
             echo "!!! ERRO: Teste de throughput para $nome_servidor_exec com arquivo ${tamanho_mb}MB falhou criticamente. Abortando." >&2
             # Tentar matar o servidor antes de sair
-            kill -15 "$server_pid" >/dev/null 2>&1
+            sudo kill -15 "$server_pid" >/dev/null 2>&1
             exit 1 # Aborta imediatamente em caso de falha crítica
         fi
 
         # --- Envio de sinal 15 para o servidor (conforme PDF) ---
         echo "Enviando um sinal 15 para o servidor $nome_servidor_exec..."
-        kill -15 "$server_pid" >/dev/null 2>&1 # Envia sinal 15
+        sudo kill -15 "$server_pid" >/dev/null 2>&1 # Envia sinal 15
 
         # Verifica se o servidor realmente encerrou
         for ((k=0; k<5; k++)); do # Tenta por até 5 segundos
@@ -273,21 +314,61 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
             sleep 1
         done
         if pgrep -f "$nome_servidor_exec" >/dev/null; then
-            echo "!!! ERRO: Servidor $nome_servidor_exec (PID $server_pid) não encerrou com sinal 15. Forçando kill -9." >&2
-            kill -9 "$server_pid" >/dev/null 2>&1
+            echo "!!! ERRO: Servidor $nome_servidor_exec \(PID $server_pid\) não encerrou com sinal 15. Forçando kill -9." >&2
+            sudo kill -9 "$server_pid" >/dev/null 2>&1
         fi
         # Não há pausa explícita aqui no fluxo do PDF entre o encerramento de um servidor e a subida do próximo
     done # Fim do loop de servidores
+
+    # --- INÍCIO DO CÓDIGO A ADICIONAR ---
+    # Após testar todos os servidores para o tamanho de arquivo atual, escrever no arquivo de dados
+    echo "${tamanho_mb} ${TIME_INET_PROCESSOS} ${TIME_INET_THREADS} ${TIME_INET_MUXES} ${TIME_UNIX_THREADS}" >> "$DATA_FILE"
+    # --- FIM DO CÓDIGO A ADICIONAR ---
+
 done # Fim do loop de arquivos
 
 # --- Mensagem final de geração de gráfico (Conforme PDF) ---
 echo "" # Linha em branco para espaçamento
-echo ">>>>>>> Gerando o gráfico de ${num_clientes} clientes com arquivos de: ${TAMANHOS_ARQUIVO_ARGS}"
+echo ">>>>>>> Gerando o gráfico de ${num_clientes} clientes com arquivos de: ${TAMANHOS_ARQUIVO_ARGS}MB"
 
-# Lógica para gnuplot e geração de gráficos viria aqui.
+# --- INÍCIO DO CÓDIGO PARA GERAR E EXECUTAR O GNUPLOT ---
+
+# Define o nome do arquivo de configuração do gnuplot e o nome do PDF de saída
+GPI_FILE="/tmp/ep4-resultados-${N_CLIENTS}.gpi"
+GRAPH_OUTPUT_PDF="ep4-resultados-${N_CLIENTS}.pdf" # PDF final no diretório do script, conforme PDF
+
+# Cria o arquivo de configuração do gnuplot usando um "here document"
+cat << EOF > "$GPI_FILE"
+set ydata time
+set timefmt "%M:%S"
+set format y "%M:%S"
+set xlabel 'Dados transferidos por cliente (MB)'
+set ylabel 'Tempo para atender ${N_CLIENTS} clientes concorrentes'
+set term pdfcairo
+set output "${GRAPH_OUTPUT_PDF}"
+set grid
+set key top left
+plot "${DATA_FILE}" using 1:4 with linespoints title "Sockets da Internet: Mux de E/S",\\
+ "${DATA_FILE}" using 1:3 with linespoints title "Sockets da Internet: Threads",\\
+ "${DATA_FILE}" using 1:2 with linespoints title "Sockets da Internet: Processos",\\
+ "${DATA_FILE}" using 1:5 with linespoints title "Sockets Unix: Threads"
+EOF
+
+# Executa o gnuplot com o arquivo de configuração gerado
+echo "Executando gnuplot para gerar ${GRAPH_OUTPUT_PDF}..."
+gnuplot "$GPI_FILE"
+
+# Verifica se o PDF foi gerado com sucesso
+if [ -f "$GRAPH_OUTPUT_PDF" ]; then
+    echo "Gráfico ${GRAPH_OUTPUT_PDF} gerado com sucesso!"
+else
+    echo "!!! ERRO: Falha ao gerar o gráfico ${GRAPH_OUTPUT_PDF}. Verifique a instalação do gnuplot e suas dependências (ex: libcairo2-dev, libpango1.0-dev)." >&2
+fi
+
+# --- FIM DO CÓDIGO PARA GERAR E EXECUTAR O GNUPLOT ---
 
 # --- Remoção de arquivos temporários (Requisito 2.8) ---
-# Remover arquivos gerados de teste
+# ATENÇÃO: Para depuração (se você quiser manter os executáveis em /tmp/ para rodar manualmente),
 for file_to_remove in "${ARQUIVOS_TESTE[@]}"; do
     rm -f "$file_to_remove"
 done
@@ -298,5 +379,10 @@ rm -f /tmp/ep4-servidor-inet_processos \
       /tmp/ep4-servidor-unix_threads \
       /tmp/ep4-cliente-inet \
       /tmp/ep4-cliente-unix
+
+# --- INÍCIO DO CÓDIGO A ADICIONAR ---
+# Remover arquivos temporários do gnuplot (.data e .gpi)
+rm -f "$DATA_FILE" "$GPI_FILE"
+# --- FIM DO CÓDIGO A ADICIONAR ---
 
 exit 0 # Código de saída 0 para sucesso, conforme requisito 2.8
