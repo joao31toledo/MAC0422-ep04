@@ -111,7 +111,7 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         pids_existentes=$(pgrep -f "$nome_servidor_exec")
         if [ -n "$pids_existentes" ]; then
             # Matar instâncias anteriores silenciosamente, não é parte da saída do PDF
-            sudo kill -9 $pids_existentes >/dev/null 2>&1
+            kill -9 $pids_existentes >/dev/null 2>&1
             sleep 1 # Pequena pausa para o processo ser encerrado
         fi
 
@@ -145,9 +145,9 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         if [[ "$nome_servidor_exec" =~ ^ep4-servidor-inet_ ]]; then
             # Verifica servidores INET (processos, threads, muxes) pelo lsof na porta
             for i in $(seq 1 15); do # Timeout de 15s para robustez
-                if sudo lsof -i :$PORTA_INET | grep -q "ep4-servi"; then
+                if lsof -i :$PORTA_INET | grep -q "ep4-servi"; then
                     SERVER_UP=true
-                    SERVER_PID_DAEMON=$(sudo lsof -t -i :$PORTA_INET 2>/dev/null | head -n 1)
+                    SERVER_PID_DAEMON=$(lsof -t -i :$PORTA_INET 2>/dev/null | head -n 1)
                     break
                 fi
                 sleep 1
@@ -170,12 +170,12 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
                 #echo "  (Servidor $nome_servidor_exec subiu com PID: $server_pid)" >&2 # Para depuração, não no PDF
             else
                 echo "!!! ERRO: Servidor $nome_servidor_exec subiu, mas não conseguimos encontrar o PID ativo. Abortando." >&2
-                sudo kill -9 "$SERVER_PID_PAI" >/dev/null 2>&1 # Tenta matar o processo pai também
+                kill -9 "$SERVER_PID_PAI" >/dev/null 2>&1 # Tenta matar o processo pai também
                 exit 1
             fi
         else
             echo "!!! ERRO: Servidor $nome_servidor_exec não subiu em tempo. Abortando." >&2
-            sudo kill -9 "$SERVER_PID_PAI" >/dev/null 2>&1 # Tenta matar o processo pai também
+            kill -9 "$SERVER_PID_PAI" >/dev/null 2>&1 # Tenta matar o processo pai também
             exit 1
         fi
 
@@ -194,13 +194,13 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
             CLIENT_ARGS="$UNIX_SOCKET_PATH"
         else
             echo "!!! ERRO: Cliente não definido para o servidor $nome_servidor_exec. Abortando." >&2
-            sudo kill -15 "$server_pid" >/dev/null 2>&1 # Tenta matar o servidor
+            kill -15 "$server_pid" >/dev/null 2>&1 # Tenta matar o servidor
             exit 1
         fi
 
         if [ ! -f "$CLIENT_EXEC" ]; then
             echo "!!! ERRO: Executável do cliente ${CLIENT_EXEC} não encontrado. Abortando." >&2
-            sudo kill -15 "$server_pid" >/dev/null 2>&1 # Tenta matar o servidor
+            kill -15 "$server_pid" >/dev/null 2>&1 # Tenta matar o servidor
             exit 1
         fi
 
@@ -258,7 +258,7 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
 
         # Captura todos os logs relevantes do servidor desde o início da sua execução
         # Usamos -o short-iso para um formato de data/hora fácil de parsear pelo dateutils.diff
-        SERVER_LOGS=$(sudo journalctl --since="$SERVER_START_DATE" -t "$nome_servidor_exec" -q -o short-iso)
+        SERVER_LOGS=$(journalctl --since="$SERVER_START_DATE" -t "$nome_servidor_exec" -q -o short-iso)
         
         # Extrai o timestamp do primeiro cliente atendido
         # LOG_START_CLIENT_PATTERN é uma string fixa, então -F é o ideal.
@@ -272,7 +272,7 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
             echo "!!! ERRO: Não foi possível encontrar os timestamps de início/fim do atendimento nos logs do journald. Abortando." >&2
             echo "Logs do servidor durante este teste:" >&2
             echo "$SERVER_LOGS" >&2
-            sudo kill -15 "$server_pid" >/dev/null 2>&1
+            kill -15 "$server_pid" >/dev/null 2>&1
             exit 1
         fi
 
@@ -298,13 +298,13 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         if [ "$ALL_CLIENTS_GOT_RESPONSE" = false ] || [ "$CLIENT_CRITICAL_ERRORS_FOUND" = true ]; then
             echo "!!! ERRO: Teste de throughput para $nome_servidor_exec com arquivo ${tamanho_mb}MB falhou criticamente. Abortando." >&2
             # Tentar matar o servidor antes de sair
-            sudo kill -15 "$server_pid" >/dev/null 2>&1
+            kill -15 "$server_pid" >/dev/null 2>&1
             exit 1 # Aborta imediatamente em caso de falha crítica
         fi
 
         # --- Envio de sinal 15 para o servidor (conforme PDF) ---
         echo "Enviando um sinal 15 para o servidor $nome_servidor_exec..."
-        sudo kill -15 "$server_pid" >/dev/null 2>&1 # Envia sinal 15
+        kill -15 "$server_pid" >/dev/null 2>&1 # Envia sinal 15
 
         # Verifica se o servidor realmente encerrou
         for ((k=0; k<5; k++)); do # Tenta por até 5 segundos
@@ -315,7 +315,7 @@ for arquivo_teste_path in "${ARQUIVOS_TESTE[@]}"; do
         done
         if pgrep -f "$nome_servidor_exec" >/dev/null; then
             echo "!!! ERRO: Servidor $nome_servidor_exec \(PID $server_pid\) não encerrou com sinal 15. Forçando kill -9." >&2
-            sudo kill -9 "$server_pid" >/dev/null 2>&1
+            kill -9 "$server_pid" >/dev/null 2>&1
         fi
         # Não há pausa explícita aqui no fluxo do PDF entre o encerramento de um servidor e a subida do próximo
     done # Fim do loop de servidores
